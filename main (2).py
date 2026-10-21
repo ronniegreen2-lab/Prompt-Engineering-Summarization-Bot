@@ -1,64 +1,83 @@
-import gradio as gr
 import os
-import openai
 import textwrap
-import time
-#Use your OpenAI API Key here
-openai.api_key = os.environ['openai.api_key']
+from datetime import datetime
+
+import gradio as gr
+from openai import OpenAI, OpenAIError
+
+# The client reads your key from the OPENAI_API_KEY environment variable.
+client = OpenAI()
+
+# Set OPENAI_MODEL to switch models without editing code.
+MODEL = os.getenv("OPENAI_MODEL", "gpt-6-luna")
+
+OUTPUT_DIR = "outputs"
+CHUNK_CHARS = 4000
+
+SUMMARY_STYLES = [
+    "Convert the content into bullet points.",
+    "Write an executive summary of the content.",
+    "Shorten the content without losing any information.",
+]
 
 
 def save_file(content, filepath):
-  with open(filepath, 'w', encoding='utf-8') as outfile:
-    outfile.write(content)
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "w", encoding="utf-8") as outfile:
+        outfile.write(content)
 
 
-def chunk_summarize(alltext, max_length, style):
-  # split and convert
-  chunks = textwrap.wrap(alltext, 4000)
-  result = list()
-  count = 0
-
-  for chunk in chunks:
-    count = count + 1
-    summary = generate_text_gpt(chunk, max_length, style)
-    print('\n\n', count, 'of', len(chunks), summary)
-    result.append(summary)
-
-  # save a file for reference as well as return full summary
-  save_file('\n\n'.join(result), 'outputs/output_%s.txt' % time())
-
-  return '\n\n'.join(result)
+def generate_summary(chunk, max_words, style):
+    response = client.responses.create(
+        model=MODEL,
+        instructions=(
+            "You are a skilled writer who summarizes content while keeping all key information. "
+            f"{SUMMARY_STYLES[style]} Use about {max_words} words or fewer."
+        ),
+        input=chunk,
+    )
+    return response.output_text.strip()
 
 
-def generate_text_gpt(input_string, max_length, style):
-  sum_styles = [
-    "convert the above content into bullet points",
-    "write an executive summary of the above content",
-    "shrink the word count of the above content without losing any information"
-  ]
-  full_prompt = f"Imagine a great writer summarizing the following content while keeping all key information: {input_string} ||END CONTENT|| Inspired by great writers,  {sum_styles[style]} in {max_length*.75} words:"
-  response = openai.Completion.create(model="text-davinci-003",
-                                      prompt=full_prompt,
-                                      temperature=0.1,
-                                      max_tokens=max_length,
-                                      top_p=1,
-                                      frequency_penalty=0,
-                                      presence_penalty=0)
-  answer = response.choices[0]['text']
-  return (answer)
+def chunk_summarize(all_text, max_words, style):
+    if not all_text or not all_text.strip():
+        return "Please enter some text to summarize."
+    if style is None:
+        style = 0
+
+    chunks = textwrap.wrap(all_text, CHUNK_CHARS)
+    results = []
+
+    try:
+        for count, chunk in enumerate(chunks, start=1):
+            summary = generate_summary(chunk, int(max_words), style)
+            print(f"\n\n{count} of {len(chunks)}\n{summary}")
+            results.append(summary)
+    except OpenAIError as error:
+        return f"OpenAI request failed: {error}"
+
+    full_summary = "\n\n".join(results)
+
+    # Save a copy for reference, then return the full summary.
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_file(full_summary, os.path.join(OUTPUT_DIR, f"output_{timestamp}.txt"))
+
+    return full_summary
 
 
 def to_gradio():
-  demo = gr.Interface(
-    fn=chunk_summarize,
-    inputs=[
-      gr.Textbox(lines=2, placeholder="Enter content to summarize..."),
-      gr.Slider(0, 1000),
-      gr.Dropdown(["bullets", "executive", "trim"], type="index")
-    ],
-    outputs="text")
-  demo.launch(debug=True, share=True)
+    demo = gr.Interface(
+        fn=chunk_summarize,
+        inputs=[
+            gr.Textbox(lines=8, placeholder="Enter content to summarize...", label="Content"),
+            gr.Slider(minimum=50, maximum=750, value=250, step=10, label="Target words per chunk"),
+            gr.Dropdown(["bullets", "executive", "trim"], type="index", value="bullets", label="Summary style"),
+        ],
+        outputs=gr.Textbox(label="Summary"),
+        title="Prompt Engineering Summarization Bot",
+    )
+    demo.launch(debug=True, share=True)
 
 
 if __name__ == "__main__":
-  to_gradio()
+    to_gradio()
